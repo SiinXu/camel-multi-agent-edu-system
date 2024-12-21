@@ -1,0 +1,22 @@
+{
+    "version": 2,
+    "builds": [
+      {
+        "src": "package.json",
+        "use": "@vercel/static-build",
+        "config": { "distDir": "build" }
+      }
+    ],
+    "routes": [
+      {
+        "src": "/(.*)",
+        "dest": "/",
+        "headers": {
+          "Access-Control-Allow-Origin": "*"
+        }
+      }
+    ],
+    "env": {
+      "REACT_APP_API_BASE_URL": "http://localhost:8000/api"
+    }
+  }

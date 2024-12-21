@@ -1,0 +1,42 @@
+{
+    "available_topics": [
+      "photosynthesis",
+      "math_functions",
+      "world_history"
+    ],
+    "topic_config": {
+      "photosynthesis": {
+        "keywords": ["photosynthesis", "chlorophyll", "light energy", "carbon dioxide", "oxygen"],
+        "target_websites": ["https://www.britannica.com/science/photosynthesis", "https://en.wikipedia.org/wiki/Photosynthesis"],
+        "faq_prompt": "Generate FAQs about photosynthesis based on the provided text.",
+        "question_bank": [
+          {"question": "What is photosynthesis?", "answer": "Photosynthesis is the process by which plants convert light energy into chemical energy.", "type": "text"},
+          {"question": "What is the role of chlorophyll in photosynthesis?", "answer": "Chlorophyll absorbs light energy to power photosynthesis.", "type": "text"}
+        ],
+        "graph_nodes": ["Photosynthesis", "Chlorophyll", "Light", "CO2", "O2"],
+        "quiz_prompt": "Generate a multiple-choice quiz about photosynthesis with 3 questions based on the provided text."
+      },
+      "math_functions": {
+        "keywords": ["linear function", "quadratic function", "exponential function", "logarithm"],
+        "target_websites": ["https://www.mathsisfun.com/algebra/functions.html"],
+        "faq_prompt": "Generate FAQs about different types of mathematical functions.",
+        "question_bank": [
+          {"question": "What is a linear function?", "answer": "A linear function is a function that can be represented by a straight line.", "type": "text"},
+          {"question": "What is the general form of a quadratic function?", "answer": "f(x) = ax^2 + bx + c", "type": "text"}
+        ],
+        "graph_nodes": ["Function", "Linear Function", "Quadratic Function", "Graph"],
+        "quiz_prompt": "Generate a fill-in-the-blanks quiz about mathematical functions with 3 questions based on the provided text."
+      },
+      "world_history": {
+        "keywords": ["world war 2", "renaissance", "industrial revolution", "cold war"],
+        "target_websites": ["https://www.history.com/topics", "https://en.wikipedia.org/wiki/History_of_the_world"],
+        "faq_prompt": "Generate FAQs about major events in world history.",
+        "question_bank": [
+          {"question": "When did World War II start?", "answer": "1939", "type": "choice"},
+          {"question": "What was the Renaissance?", "answer": "A period of European cultural, artistic, political and economic “rebirth” following the Middle Ages.", "type": "text"}
+        ],
+        "graph_nodes": ["World War II", "Renaissance", "Industrial Revolution", "Cold War"],
+        "quiz_prompt": "Generate a true/false quiz about world history with 3 questions based on the provided text."
+      }
+    }
+  }
