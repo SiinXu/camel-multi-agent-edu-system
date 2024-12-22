@@ -9,6 +9,7 @@ class AgentStatus(Enum):
     GENERATING_FAQ = "generating_faq"
     GENERATING_QUIZ = "generating_quiz"
     ERROR = "error"
+    USING_TOOL = "using_tool"
 
 class LearningStyle(Enum):
     VISUAL = "visual"
@@ -225,13 +226,14 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
         response = self.answer_question(prompt, current_topic)
         return response
 
-    def step(self, input_message: str, current_topic: str = None) -> str:
+    def step(self, message: dict) -> str:
         """处理一条消息并返回回复."""
         try:
             self.set_status(AgentStatus.THINKING, "思考问题中...")
 
-            # 根据主题选择不同的处理方式
-            content = input_message
+            # 从消息中获取内容
+            content = message.get("content", "")
+            current_topic = message.get("topic")
 
             # 从消息中提取主题（如果存在）
             if not current_topic:
@@ -279,31 +281,11 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
                 else:
                     # 调用 Qwen API
                     self.set_status(AgentStatus.THINKING, "生成回复中...")
-                    response_content = self.generate_response(input_message, current_topic)
+                    response_content = self.generate_response(content, current_topic)
             else:
                 # 如果没有指定主题, 正常调用 Qwen API
                 self.set_status(AgentStatus.THINKING, "生成回复中...")
-                response_content = self.answer_question(input_message)
-
-            # Assess learning style and knowledge level
-            if input_message.startswith("student_"):
-                student_agent = agents.get(input_message)
-                if student_agent:
-                    # Assess learning style if not already set
-                    if not hasattr(student_agent, 'learning_style') or not student_agent.learning_style:
-                        self.set_status(AgentStatus.THINKING, "评估学习风格中...")
-                        learning_style = self.assess_learning_style(input_message, student_agent.message_history)
-                        if learning_style:
-                            student_agent.learning_style = learning_style
-                            print(f"Assessed learning style for {input_message}: {learning_style.value}")
-
-                    # Assess knowledge level for the current topic
-                    if current_topic:
-                        self.set_status(AgentStatus.THINKING, "评估知识水平中...")
-                        knowledge_level = self.assess_knowledge_level(input_message, current_topic, content)
-                        if knowledge_level:
-                            student_agent.knowledge_level = knowledge_level
-                            print(f"Assessed knowledge level for {input_message}: {knowledge_level.value}")
+                response_content = self.answer_question(content)
 
             self.set_status(AgentStatus.IDLE)
             return response_content

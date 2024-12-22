@@ -47,3 +47,34 @@ class StudentAgent:
             "knowledge_level": self.knowledge_level,
             "current_topic": self.current_topic
         }
+        
+    def step(self, message: dict) -> str:
+        """处理一条消息并返回回复."""
+        try:
+            # 从消息中获取内容
+            content = message.get("content", "")
+            current_topic = message.get("topic")
+            
+            # 更新当前主题
+            if current_topic:
+                self.set_topic(current_topic)
+                
+            # 记录消息
+            self.conversation_history.append({
+                "role": "user",
+                "content": content
+            })
+            
+            # 生成回复
+            response = f"Student {self.agent_id} received message: {content}"
+            
+            # 记录回复
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": response
+            })
+            
+            return response
+            
+        except Exception as e:
+            return f"Error processing message: {str(e)}"

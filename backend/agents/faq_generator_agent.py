@@ -3,7 +3,8 @@ from duckduckgo_search import DDGS
 
 class FAQGeneratorAgent:
     def __init__(self):
-        self.search_engine = DDGS()
+        self.name = "FAQGeneratorAgent"
+        self.search_engine = DDGS(timeout=20)
         
     def generate_faq(self, topic: str) -> str:
         """生成特定主题的 FAQ"""
@@ -17,13 +18,21 @@ class FAQGeneratorAgent:
         except Exception as e:
             return f"生成 FAQ 时出错: {str(e)}"
             
-    def step(self, message: str) -> str:
+    def step(self, message: dict) -> str:
         """处理一条消息并返回回复"""
         try:
-            # 解析消息
-            if isinstance(message, str) and "topic=" in message:
-                topic = message.split("topic=")[1].split("&")[0]
+            # 从消息中获取内容和主题
+            content = message.get("content", "")
+            topic = message.get("topic")
+            
+            # 如果没有主题，尝试从内容中提取
+            if not topic and isinstance(content, str) and "topic=" in content:
+                topic = content.split("topic=")[1].split("&")[0]
+                
+            if topic:
                 return self.generate_faq(topic)
-            return "请提供要生成 FAQ 的主题，格式：topic=主题名"
+                
+            return "请提供要生成 FAQ 的主题"
+            
         except Exception as e:
             return f"处理消息时出错: {str(e)}"
