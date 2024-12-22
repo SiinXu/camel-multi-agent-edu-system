@@ -7,13 +7,13 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import 'katex/dist/katex.min.css';
 import { 
-  DownloadIcon,
+  ArrowDownTrayIcon as DownloadIcon,
   PlayIcon,
   PauseIcon,
-  RewindIcon,
-  FastForwardIcon,
-  VolumeUpIcon,
-} from '@heroicons/react/outline';
+  BackwardIcon as RewindIcon,
+  ForwardIcon as FastForwardIcon,
+  SpeakerWaveIcon as VolumeUpIcon,
+} from '@heroicons/react/24/outline';
 import WaveSurfer from 'wavesurfer.js';
 
 export default function MessageItem({ message }) {

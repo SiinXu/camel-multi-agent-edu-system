@@ -1,290 +1,219 @@
-import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import ChatLayout from './components/ChatLayout';
-import NotFound from './components/NotFound';
-import { useWebSocket } from './hooks/useWebSocket';
-import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
-import SettingsPage from './components/SettingsPage';
+import './App.css';
+
+// SVG 头像组件
+const Avatar = ({ role, size = 40 }) => {
+  const colors = {
+    teacher: '#4CAF50',
+    student: '#2196F3',
+    knowledge: '#FF9800',
+    faq: '#9C27B0',
+    quiz: '#F44336'
+  };
+
+  const getInitials = (role) => {
+    const map = {
+      teacher_agent: 'T',
+      student: 'S',
+      knowledge_crawler: 'K',
+      faq_generator: 'F',
+      quiz_generator: 'Q'
+    };
+    return map[role] || '?';
+  };
+
+  const bgColor = colors[role.split('_')[0]] || '#757575';
+
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="20" fill={bgColor} />
+      <text
+        x="20"
+        y="20"
+        dominantBaseline="middle"
+        textAnchor="middle"
+        fill="white"
+        fontSize="16"
+        fontWeight="bold"
+      >
+        {getInitials(role)}
+      </text>
+    </svg>
+  );
+};
+
+// Agent 头像和角色配置
+const AGENTS = {
+  teacher_agent: {
+    name: "教师助手",
+    avatar: "/avatars/teacher.png",
+    role: "assistant"
+  },
+  student_agent: {
+    name: "学生助手",
+    avatar: "/avatars/student.png",
+    role: "user"
+  },
+  knowledge_crawler: {
+    name: "知识爬虫",
+    avatar: "/avatars/crawler.png",
+    role: "assistant"
+  },
+  faq_generator: {
+    name: "FAQ生成器",
+    avatar: "/avatars/faq.png",
+    role: "assistant"
+  },
+  quiz_generator: {
+    name: "测验生成器",
+    avatar: "/avatars/quiz.png",
+    role: "assistant"
+  }
+};
 
 // API 配置
-const API_BASE_URL = 'http://localhost:8002';  // 更新后端服务器地址
+const API_BASE_URL = 'http://localhost:8002';
 
 function App() {
   const [messages, setMessages] = useState([]);
-  const [agentStatus, setAgentStatus] = useState({});
-  const [selectedAgent, setSelectedAgent] = useState('teacher_agent');
-  const [currentTopic, setCurrentTopic] = useState('');
-  const [message, setMessage] = useState('');
-  const [action, setAction] = useState('ask_question');
-  const [pdfFile, setPdfFile] = useState(null);
-  const [imageUrl, setImageUrl] = useState('');
-  const [multimodalQuestion, setMultimodalQuestion] = useState('');
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [apiKeys, setApiKeys] = useState(() => ({
-    modelscope: localStorage.getItem('modelscopeApiKey') || '',
-    fish_audio: localStorage.getItem('fishAudioApiKey') || '',
-    chunkr: localStorage.getItem('chunkrApiKey') || '',
-    model_name: 'Qwen/Qwen2.5-32B-Instruct',
-  }));
+  const [input, setInput] = useState('');
+  const [currentAgent, setCurrentAgent] = useState('teacher_agent');
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef(null);
 
-  const { socket, connected } = useWebSocket('ws://localhost:8002/ws');
+  // 获取历史消息
+  useEffect(() => {
+    fetchHistory();
+  }, []);
+
+  // 滚动到最新消息
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
   useEffect(() => {
-    if (socket) {
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'message') {
-          setMessages(prev => [...prev, data.data]);
-        } else if (data.type === 'agent_status') {
-          setAgentStatus(data.data);
-        }
-      };
-    }
-  }, [socket]);
+    scrollToBottom();
+  }, [messages]);
 
-  const handleSendMessage = async (message) => {
+  // 获取历史消息
+  const fetchHistory = async () => {
     try {
+      const response = await axios.get(`${API_BASE_URL}/api/history/student_1`);
+      setMessages(response.data.messages || []);
+    } catch (error) {
+      console.error('Error fetching history:', error);
+    }
+  };
+
+  // 发送消息
+  const handleSendMessage = async () => {
+    if (!input.trim()) return;
+
+    try {
+      setIsLoading(true);
+      const newMessage = {
+        content: input,
+        sender: 'student_1',
+        role: 'user',
+        timestamp: new Date().toISOString()
+      };
+
+      // 添加用户消息到界面
+      setMessages(prev => [...prev, newMessage]);
+      setInput('');
+
+      // 发送消息到后端
       const response = await axios.post(`${API_BASE_URL}/api/ask`, {
         student_id: 'student_1',
-        question: message,
-        agent_name: selectedAgent,
-        topic: currentTopic,
+        question: input,
+        agent_name: currentAgent
       });
-      
+
       if (response.data && response.data.answer) {
-        setMessages(prev => [...prev, { role: 'user', content: message }, { role: 'assistant', content: response.data.answer }]);
+        // 添加 Agent 回复到界面
+        const agentMessage = {
+          content: response.data.answer,
+          sender: currentAgent,
+          role: AGENTS[currentAgent].role,
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, agentMessage]);
+      } else {
+        console.error('Invalid response format:', response.data);
+        alert('接收消息失败，请重试');
       }
+
     } catch (error) {
       console.error('Error sending message:', error);
+      alert('发送消息失败，请重试');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleSendFile = async (file) => {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      const response = await axios.post(`${API_BASE_URL}/api/upload_pdf`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-      
-      if (response.data && response.data.message) {
-        setMessages(prev => [...prev, { role: 'system', content: response.data.message }]);
-      }
-    } catch (error) {
-      console.error('Error uploading file:', error);
-    }
-  };
-
-  const handleAskQuestion = async () => {
-    if (!message.trim()) return;
-    
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/ask`, {
-        student_id: 'student_1',
-        question: message,
-        agent_name: selectedAgent,
-        topic: currentTopic,
-      });
-      
-      if (response.data && response.data.answer) {
-        setMessages(prev => [...prev, { role: 'user', content: message }, { role: 'assistant', content: response.data.answer }]);
-        setMessage('');
-      }
-    } catch (error) {
-      console.error('Error asking question:', error);
-    }
-  };
-
-  const handlePdfUpload = async () => {
-    if (!pdfFile) return;
-    
-    try {
-      const formData = new FormData();
-      formData.append('file', pdfFile);
-      
-      const response = await axios.post(`${API_BASE_URL}/api/upload_pdf`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-      
-      if (response.data && response.data.message) {
-        setMessages(prev => [...prev, { role: 'system', content: response.data.message }]);
-        setPdfFile(null);
-      }
-    } catch (error) {
-      console.error('Error uploading PDF:', error);
-    }
-  };
-
-  const handleMultimodalAsk = async () => {
-    if (!multimodalQuestion.trim() || !imageUrl.trim()) return;
-    
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/multimodal`, {
-        question: multimodalQuestion,
-        image: imageUrl,
-      });
-      
-      if (response.data && response.data.answer) {
-        setMessages(prev => [...prev, 
-          { role: 'user', content: `[Image: ${imageUrl}]\n${multimodalQuestion}` },
-          { role: 'assistant', content: response.data.answer }
-        ]);
-        setMultimodalQuestion('');
-        setImageUrl('');
-      }
-    } catch (error) {
-      console.error('Error asking multimodal question:', error);
-    }
-  };
-
-  const handleStudentInteract = async (action) => {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/interact`, {
-        sender_id: 'student_1',
-        receiver_id: selectedAgent,
-        action: action,
-        content: message,
-      });
-      
-      if (response.data && response.data.message) {
-        setMessages(prev => [...prev, { role: 'system', content: response.data.message }]);
-      }
-    } catch (error) {
-      console.error('Error in student interaction:', error);
-    }
-  };
-
-  const agents = [
-    { name: 'Teacher Agent', value: 'teacher_agent' },
-    { name: 'Student Agent 1 (Alice)', value: 'student_agent_1' },
-    { name: 'Student Agent 2 (Bob)', value: 'student_agent_2' },
-    { name: 'Multimodal Agent', value: 'multimodal_agent' },
-  ];
-
-  const topics = [
-    { name: 'Select a topic', value: '' },
-    { name: 'Photosynthesis', value: 'photosynthesis' },
-    { name: 'Math Functions', value: 'math_functions' },
-    { name: 'World History', value: 'world_history' },
-  ];
-
-  const saveApiKeys = (newKeys) => {
-    setApiKeys(newKeys);
-    localStorage.setItem('modelscopeApiKey', newKeys.modelscope || '');
-    localStorage.setItem('fishAudioApiKey', newKeys.fish_audio || '');
-    localStorage.setItem('chunkrApiKey', newKeys.chunkr || '');
-    localStorage.setItem('modelName', newKeys.model_name);
-  };
-
-  const getStatusStyle = (status) => {
-    switch (status) {
-      case 'online':
-        return 'bg-green-500';
-      case 'busy':
-        return 'bg-yellow-500';
-      case 'offline':
-        return 'bg-red-500';
-      default:
-        return 'bg-gray-500';
+  // 处理按键事件
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
     }
   };
 
   return (
-    <Routes>
-      <Route 
-        path="/" 
-        element={
-          <div className={`min-h-screen ${isDarkMode ? 'dark bg-gray-900' : 'bg-gray-100'}`}>
-            <div className='absolute top-4 right-4'>
-              <button
-                onClick={() => setIsDarkMode(!isDarkMode)}
-                className="bg-gray-200 dark:bg-gray-700 rounded-full p-2 focus:outline-none"
-              >
-                {isDarkMode ? (
-                  <SunIcon className="h-6 w-6 text-yellow-500" />
-                ) : (
-                  <MoonIcon className="h-6 w-6 text-gray-800 dark:text-gray-200" />
-                )}
-              </button>
+    <div className="App">
+      <div className="chat-container">
+        <div className="agent-selector">
+          {Object.entries(AGENTS).map(([agentId, agent]) => (
+            <div
+              key={agentId}
+              className={`agent-option ${currentAgent === agentId ? 'active' : ''}`}
+              onClick={() => setCurrentAgent(agentId)}
+            >
+              <Avatar role={agentId} size={24} />
+              <span>{agent.name}</span>
             </div>
-            <div className='absolute top-4 left-4'>
-              <button onClick={() => setShowSettings(true)} className="bg-gray-200 dark:bg-gray-700 rounded-full p-2 focus:outline-none">
-                ⚙️
-              </button>
-            </div>
-            <h1 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-8 pt-16">
-              Intelligent Education System
-            </h1>
+          ))}
+        </div>
 
-            <div className="max-w-4xl mx-auto bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-hidden">
-              <div className="grid grid-cols-3 gap-4 p-4 border-b border-gray-200 dark:border-gray-700">
-                {Object.entries(agentStatus).map(([agentName, status]) => (
-                  <div
-                    key={agentName}
-                    className={`p-4 rounded-lg ${getStatusStyle(status.status)}`}
-                  >
-                    <div className="font-medium">{agentName}</div>
-                    <div className="text-sm mt-1">
-                      Status: {status.status}
-                      {status.message && (
-                        <div className="mt-1 text-sm opacity-75">{status.message}</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+        <div className="messages-container">
+          {messages.map((msg, index) => (
+            <div
+              key={index}
+              className={`message ${msg.role === 'user' ? 'user-message' : 'agent-message'}`}
+            >
+              <Avatar role={msg.role === 'user' ? 'student' : msg.sender} />
+              <div className="message-content">
+                <div className="message-sender">
+                  {msg.role === 'user' ? '我' : AGENTS[msg.sender]?.name}
+                </div>
+                <div className="message-text">{msg.content}</div>
+                <div className="message-time">
+                  {new Date(msg.timestamp).toLocaleTimeString()}
+                </div>
               </div>
-
-              <ChatLayout
-                messages={messages}
-                onSendMessage={handleSendMessage}
-                onSendFile={handleSendFile}
-                agents={agents}
-                topics={topics}
-                selectedAgent={selectedAgent}
-                setSelectedAgent={setSelectedAgent}
-                currentTopic={currentTopic}
-                setCurrentTopic={setCurrentTopic}
-                message={message}
-                setMessage={setMessage}
-                action={action}
-                setAction={setAction}
-                pdfFile={pdfFile}
-                setPdfFile={setPdfFile}
-                imageUrl={imageUrl}
-                setImageUrl={setImageUrl}
-                multimodalQuestion={multimodalQuestion}
-                setMultimodalQuestion={setMultimodalQuestion}
-                handleAskQuestion={handleAskQuestion}
-                handlePdfUpload={handlePdfUpload}
-                handleImageUrlChange={(event) => setImageUrl(event.target.value)}
-                handleMultimodalAsk={handleMultimodalAsk}
-                handleInterrupt={() => console.log('Interrupt')}
-                handleStudentInteract={handleStudentInteract}
-              />
             </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
 
-            <SettingsPage
-              show={showSettings}
-              onClose={() => setShowSettings(false)}
-              apiKeys={apiKeys}
-              onSave={(newKeys) => {
-                saveApiKeys(newKeys);
-                setShowSettings(false);
-              }}
-            />
-          </div>
-        } 
-      />
-      <Route path="/404" element={<NotFound />} />
-      <Route path="*" element={<Navigate to="/404" replace />} />
-    </Routes>
+        <div className="input-container">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder="输入消息..."
+            disabled={isLoading}
+          />
+          <button
+            onClick={handleSendMessage}
+            disabled={isLoading || !input.trim()}
+          >
+            {isLoading ? '发送中...' : '发送'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

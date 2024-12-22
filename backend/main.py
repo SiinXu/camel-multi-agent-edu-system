@@ -1,210 +1,64 @@
-from typing import Dict, Any, Optional, List
-import json
-import io
-import os
-import base64
-import queue
-import threading
-import time
-import asyncio
 from datetime import datetime
+import json
+import os
+import asyncio
+from typing import Dict, List, Optional, Any
 
-from fastapi import FastAPI, WebSocket, HTTPException, Depends, File, UploadFile, Form, Request, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship, Session
-from sqlalchemy.sql import func
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from contextlib import asynccontextmanager
 
-# 导入 Agent 类
-from agents.teacher_agent import TeacherAgent
+from models import Base, Message, StudyRecord
+from schemas import (
+    AskRequest, StudentInteractRequest, ToolRequest, TextToSpeechRequest,
+    AdminRequest, FirecrawlScrapeRequest, FirecrawlMapRequest,
+    MultimodalRequest, MessageSchema, StudySession, ChatMessage
+)
 from agents.student_agent import StudentAgent
+from agents.teacher_agent import TeacherAgent
 from agents.knowledge_crawler_agent import KnowledgeCrawlerAgent
 from agents.faq_generator_agent import FAQGeneratorAgent
 from agents.quiz_generator_agent import QuizGeneratorAgent
-from agents.admin_agent import AdminAgent
+from agents.coordinator_agent import CoordinatorAgent
+from core.blackboard import Blackboard
 
-# 导入工具类
-from tools.duckduckgo_search import DuckDuckGoSearchTool
-from tools.web_scraper import WebScraperTool
+# 创建异步数据库引擎
+DATABASE_URL = "sqlite+aiosqlite:///./test.db"
+engine = create_async_engine(DATABASE_URL, echo=True)
 
-import requests
-from bs4 import BeautifulSoup
-from io import BytesIO
-from PIL import Image
+# 创建异步会话工厂
+SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-# ===================== 数据库模型 =====================
-# 创建数据库引擎和会话
-engine = create_engine("sqlite:///./study_records.db")
+# 创建数据库会话依赖
+async def get_db():
+    async with SessionLocal() as session:
+        yield session
 
-class Base(DeclarativeBase):
-    pass
+# 创建数据库表
+async def init_db():
+    async with engine.begin() as conn:
+        # 删除所有表
+        await conn.run_sync(Base.metadata.drop_all)
+        # 创建所有表
+        await conn.run_sync(Base.metadata.create_all)
 
-class StudyRecord(Base):
-    __tablename__ = "study_records"
-    
-    record_id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(String, index=True)
-    student_id = Column(String, index=True)
-    topic = Column(String)
-    content = Column(Text)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+# 全局变量
+agents = {}
+connected_clients = set()
 
-class Message(Base):
-    __tablename__ = "messages"
-    
-    message_id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(String, index=True)
-    content = Column(Text)
-    role = Column(String)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+# FastAPI 应用
+app = FastAPI()
 
-# ===================== 数据库操作 =====================
-Base.metadata.create_all(bind=engine)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ===================== Pydantic 模型 =====================
-class AskRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    student_id: str
-    question: str
-    topic: Optional[str] = None
-
-class ToolRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    tool_name: str
-    params: dict
-
-class TextToSpeechRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    text: str
-
-class SpeechToTextRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    audio_file: str
-
-class AdminRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    action: str
-    params: dict
-
-class StudentInteractRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    sender_id: str
-    action: str
-    content: Optional[str] = None
-
-class ChunkrUploadRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    file: UploadFile = File(...)
-
-class FirecrawlScrapeRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    url: str
-    params: dict
-
-class FirecrawlMapRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    url: str
-
-class MultimodalRequest(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    question: str
-    image: Optional[str] = None
-
-class Message(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    content: str = Field(default="")
-    role: str = Field(default="user")
-    timestamp: Optional[datetime] = Field(default_factory=datetime.now)
-
-class StudySession(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    student_id: str
-    topic: str
-    start_time: datetime = Field(default_factory=datetime.now)
-    end_time: Optional[datetime] = None
-    status: str = Field(default="active")
-
-class ChatMessage(BaseModel):
-    model_config = {
-        "protected_namespaces": ()
-    }
-    content: str
-    role: str = Field(default="user")
-    timestamp: Optional[datetime] = Field(default_factory=datetime.now)
-
-# ===================== 全局消息队列 =====================
-message_queue = queue.Queue()
-MAX_MESSAGES = 100  # 最多保存的消息数量
-
-# ===================== WebSocket 连接管理器 =====================
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
-
-    async def broadcast_agent_status(self):
-        """广播所有 Agent 的状态"""
-        status = {
-            "teacher_agent": "idle",  # 简化状态
-            "student_agents": {
-                student_id: "idle"  # 简化状态
-                for student_id in student_agents
-            }
-        }
-        await self.broadcast(json.dumps({"type": "agent_status", "data": status}))
-
-manager = ConnectionManager()
-
-# ===================== FastAPI 应用 =====================
-from contextlib import asynccontextmanager
-
-# 定义端口号
-PORT = 8002
+# 配置 CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -212,22 +66,378 @@ async def lifespan(app: FastAPI):
     print("* 数据库初始化完成")
     print("* CORS 中间件配置完成")
     print("* WebSocket 管理器初始化完成")
+    
+    # 初始化数据库
+    await init_db()
+    
+    # ===================== 初始化 Agent =====================
+    from agents.teacher_agent import TeacherAgent
+    from agents.knowledge_crawler_agent import KnowledgeCrawlerAgent
+    from agents.faq_generator_agent import FAQGeneratorAgent
+    from agents.quiz_generator_agent import QuizGeneratorAgent
+    from agents.coordinator_agent import CoordinatorAgent
+    from core.blackboard import Blackboard
+
+    # 创建共享黑板
+    blackboard = Blackboard()
+
+    # 初始化协调者 Agent
+    coordinator = CoordinatorAgent("coordinator", blackboard)
+    
+    # 初始化其他 Agents
+    agents_to_register = {
+        "teacher_agent": TeacherAgent(blackboard=blackboard, agent_id="teacher_agent"),
+        "knowledge_crawler": KnowledgeCrawlerAgent(blackboard=blackboard, agent_id="knowledge_crawler"),
+        "faq_generator": FAQGeneratorAgent(blackboard=blackboard, agent_id="faq_generator"),
+        "quiz_generator": QuizGeneratorAgent(blackboard=blackboard, agent_id="quiz_generator")
+    }
+
+    # 注册所有 Agent
+    global agents
+    agents = {"coordinator": coordinator}
+    for agent_id, agent in agents_to_register.items():
+        print(f"* 注册 Agent: {agent_id}")
+        await coordinator.register_agent(agent)
+        agents[agent_id] = agent
+
+    # 启动所有 Agent
+    for agent_id, agent in agents.items():
+        print(f"* 启动 Agent: {agent_id}")
+        await agent.start()
+
     print("* 所有代理初始化完成")
-    print(f"服务器运行在: http://localhost:{PORT}")
-    print(f"API 文档地址: http://localhost:{PORT}/docs")
+    print(f"服务器运行在: http://localhost:8002")
+    print(f"API 文档地址: http://localhost:8002/docs")
     print("==============================")
     yield
+    print("正在关闭服务器...")
 
 app = FastAPI(lifespan=lifespan)
 
-# 配置 CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ===================== API 路由 =====================
+@app.post("/api/ask")
+async def ask_question(request: AskRequest, db: AsyncSession = Depends(get_db)):
+    """处理用户的问题请求."""
+    try:
+        # 记录学生的问题
+        print(f"Received request: student_id={request.student_id}, question={request.question}, agent_name={request.agent_name}")
+        
+        # 保存学生消息
+        message = Message(
+            student_id=request.student_id,
+            content=request.question,
+            sender=request.student_id,
+            role="user",
+            timestamp=datetime.now()
+        )
+        db.add(message)
+        await db.commit()
+        print(f"Saved student message: {request.question}")
+        
+        # 获取指定的 Agent
+        agent = agents.get(request.agent_name)
+        if not agent:
+            return {"status": "error", "message": f"Agent {request.agent_name} not found"}
+        print(f"Found agent: {request.agent_name}")
+        
+        # 构造任务
+        task = {
+            "student_id": request.student_id,
+            "question": request.question,
+            "topic": request.topic,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 让 Agent 处理问题
+        response = await agent.process_message(task)
+        print(f"Agent response: {response}")
+        
+        # 保存 Agent 的回复
+        if response:
+            message = Message(
+                student_id=request.student_id,
+                content=response.get("content", str(response)),
+                sender=request.agent_name,
+                role="assistant",
+                timestamp=datetime.now()
+            )
+            db.add(message)
+            await db.commit()
+            print(f"Saved agent message: {response.get('content', str(response))}")
+        
+        return {"status": "success", "message": response.get("content", str(response)), "agent_id": request.agent_name}
+        
+    except Exception as e:
+        print(f"Error in ask_question: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/agents/status")
+async def get_agents_status():
+    """获取所有 Agent 的状态."""
+    try:
+        coordinator = agents.get("coordinator")
+        if not coordinator:
+            raise HTTPException(status_code=404, detail="Coordinator agent not found")
+
+        response = await coordinator.process_message({"type": "status"})
+        if not response:
+            raise HTTPException(status_code=500, detail="Failed to get agent status")
+
+        return response
+
+    except Exception as e:
+        print(f"Error getting agent status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/messages")
+async def get_messages():
+    """获取所有消息."""
+    db = SessionLocal()
+    try:
+        messages = db.query(Message).order_by(Message.timestamp.asc()).all()
+        return {"messages": messages}
+    finally:
+        db.close()
+
+@app.get("/api/agents")
+async def list_agents():
+    """列出所有可用的 Agents."""
+    return {
+        "agents": [
+            {"id": "teacher_agent", "name": "教师助手"},
+            {"id": "knowledge_crawler", "name": "知识爬虫"},
+            {"id": "faq_generator", "name": "FAQ 生成器"},
+            {"id": "quiz_generator", "name": "测验生成器"}
+        ]
+    }
+
+@app.get("/api/history/{student_id}")
+async def get_history(student_id: str):
+    """获取学生的对话历史."""
+    db = SessionLocal()
+    try:
+        messages = db.query(Message).filter(
+            Message.student_id == student_id
+        ).order_by(Message.timestamp.asc()).all()
+        return {"messages": messages}
+    finally:
+        db.close()
+
+@app.post("/api/student/interact")
+async def student_interact(request: StudentInteractRequest):
+    """学生互动接口."""
+    db = SessionLocal()
+    try:
+        # 获取或创建学生 Agent
+        student_agent = get_or_create_student_agent(request.sender_id)
+
+        # 处理互动
+        response = student_agent.handle_interaction(request.action, request.content)
+
+        # 记录互动
+        message = Message(
+            student_id=request.sender_id,
+            content=f"{request.action}: {request.content}",
+            message_type="student",
+            timestamp=datetime.now()
+        )
+        db.add(message)
+
+        # 记录回复
+        reply = Message(
+            student_id=request.sender_id,
+            content=response,
+            message_type="assistant",
+            timestamp=datetime.now()
+        )
+        db.add(reply)
+        await db.commit()
+
+        return {
+            "status": "success",
+            "response": response
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/api/tools/search")
+async def use_search_tool(request: ToolRequest):
+    """使用 DuckDuckGo 搜索工具."""
+    try:
+        tool = DuckDuckGoSearchTool()
+        result = tool.search(request.params.get("query", ""))
+        return {"result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/tools/scrape")
+async def use_scrape_tool(request: ToolRequest):
+    """使用网页抓取工具."""
+    try:
+        tool = WebScraperTool()
+        result = tool.scrape(request.params.get("url", ""))
+        return {"result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/admin/action")
+async def admin_action(request: AdminRequest):
+    """管理员操作接口."""
+    try:
+        # 获取 Admin Agent
+        admin_agent = agents.get("admin_agent")
+        if not admin_agent:
+            raise HTTPException(status_code=404, detail="Admin agent not found")
+
+        # 执行操作
+        result = admin_agent.execute_action(request.action, request.params)
+        return {"result": result}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload/pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """上传 PDF 文件并使用 Chunkr 处理."""
+    try:
+        # 保存文件
+        file_path = f"uploads/{file.filename}"
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        # 使用 Chunkr 处理
+        # TODO: 添加实际的 Chunkr 处理逻辑
+
+        return {
+            "status": "success",
+            "message": "File uploaded and processed successfully"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/firecrawl/scrape")
+async def scrape_structured(request: FirecrawlScrapeRequest):
+    """使用 Firecrawl 进行结构化抓取."""
+    try:
+        # TODO: 添加实际的 Firecrawl 抓取逻辑
+        return {
+            "status": "success",
+            "data": {}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/firecrawl/map")
+async def map_site(request: FirecrawlMapRequest):
+    """使用 Firecrawl 抓取网站地图."""
+    try:
+        # TODO: 添加实际的网站地图抓取逻辑
+        return {
+            "status": "success",
+            "sitemap": {}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/multimodal/ask")
+async def handle_multimodal_question(request: MultimodalRequest):
+    """处理包含图片的多模态问题."""
+    try:
+        # 如果有图片，先处理图片
+        image_data = None
+        if request.image:
+            # 解码 Base64 图片
+            image_bytes = base64.b64decode(request.image)
+            image = Image.open(BytesIO(image_bytes))
+            # TODO: 处理图片
+
+        # 获取教师 Agent
+        teacher_agent = agents.get("teacher_agent")
+        if not teacher_agent:
+            raise HTTPException(status_code=404, detail="Teacher agent not found")
+
+        # 处理问题
+        response = teacher_agent.handle_multimodal_question(
+            question=request.question,
+            image=image_data
+        )
+
+        return {
+            "status": "success",
+            "answer": response
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/test")
+async def test_model():
+    """测试接口."""
+    try:
+        return {
+            "status": "success",
+            "message": "API is working"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/records")
+async def get_records():
+    """获取所有学习记录."""
+    db = SessionLocal()
+    try:
+        records = db.query(StudyRecord).order_by(StudyRecord.timestamp.desc()).all()
+        return {
+            "status": "success",
+            "records": records
+        }
+    finally:
+        db.close()
+
+@app.post("/api/tts")
+async def text_to_speech(request: TextToSpeechRequest):
+    """文本转语音接口."""
+    try:
+        # TODO: 添加实际的文本转语音逻辑
+        audio_data = None  # 这里应该是实际的音频数据
+
+        if not audio_data:
+            raise HTTPException(status_code=500, detail="Failed to generate audio")
+
+        return {
+            "status": "success",
+            "audio": base64.b64encode(audio_data).decode()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket 连接处理."""
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                # TODO: 处理 WebSocket 消息
+                await websocket.send_text(json.dumps({
+                    "status": "success",
+                    "message": "Message received"
+                }))
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps({
+                    "status": "error",
+                    "message": "Invalid JSON"
+                }))
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 # 静态文件目录
 frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "build")
@@ -244,414 +454,66 @@ app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="stat
 # 处理前端路由
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
-    # 如果请求的是 API 路径，跳过
-    if full_path.startswith("api/"):
-        raise HTTPException(status_code=404, detail="API not found")
-    
-    # 返回 index.html
-    return FileResponse(os.path.join(frontend_build_path, "index.html"))
-
-# ===================== API 接口 =====================
-@app.get("/messages")
-async def get_messages(db: Session = Depends(get_db)):
-    """获取所有消息."""
-    db_messages = db.query(Message).order_by(Message.timestamp.desc()).all()
-    messages = [
-        {
-            "sender": msg.sender,
-            "content": msg.content,
-            "timestamp": msg.timestamp.isoformat()
-        } for msg in db_messages
-    ]
-    return messages
-
-@app.post("/ask")
-async def ask_question(request: AskRequest, db: Session = Depends(get_db)):
-    """学生提问接口."""
-    # 根据 agent_name 选择对应的 Agent
-    agent = agents.get(request.agent_name)
-    if agent is None:
-        raise HTTPException(status_code=400, detail=f"Invalid agent name: {request.agent_name}")
-
-    # 记录学生的问题
-    student_message = Message(
-        sender="Student",
-        content=request.question,
-        timestamp=datetime.now()
-    )
-    db.add(student_message)
-    db.commit()
-
-    # 调用 Agent 的 step 方法处理问题
-    student_msg = {
-        "role_name": "Student",
-        "role_type": "USER",
-        "meta_dict": None,
-        "content": request.question
-    }
-
-    if isinstance(agent, TeacherAgent):
-        teacher_response = agent.step(student_msg, request.topic)
-        response_content = teacher_response
-
-        # 记录学习记录
-        study_record = StudyRecord(
-            student_id=request.student_id,
-            content=request.question,
-            response=response_content,
-            timestamp=datetime.now()
-        )
-        db.add(study_record)
-
-        # 记录教师回复
-        teacher_message = Message(
-            sender=request.agent_name,
-            content=response_content,
-            timestamp=datetime.now()
-        )
-        db.add(teacher_message)
-        db.commit()
-
-    elif isinstance(agent, StudentAgent):
-        teacher_agent = agents.get("teacher_agent")
-        if teacher_agent is None:
-            raise HTTPException(status_code=500, detail="Teacher agent not found.")
-
-        teacher_response = teacher_agent.generate_response(student_msg, request.topic)
-        student_response = agent.step(teacher_response)
-        response_content = student_response
-
-        # 记录学生回复
-        response_message = Message(
-            sender=request.agent_name,
-            content=response_content,
-            timestamp=datetime.now()
-        )
-        db.add(response_message)
-        db.commit()
-
-    else:
-        response = agent.step(student_msg)
-        response_content = response
-        
-        # 记录 Agent 回复
-        response_message = Message(
-            sender=request.agent_name,
-            content=response_content,
-            timestamp=datetime.now()
-        )
-        db.add(response_message)
-        db.commit()
-
-    # 广播消息到 WebSocket 连接
-    await manager.broadcast(json.dumps({
-        "type": "message",
-        "data": {
-            "sender": request.agent_name,
-            "content": response_content,
-            "timestamp": datetime.now().isoformat()
-        }
-    }))
-
-    return {"answer": response_content}
-
-@app.post("/interact")
-async def student_interact(request: StudentInteractRequest, db: Session = Depends(get_db)):
-    """学生互动接口."""
-    sender = get_or_create_student_agent(request.sender_id)
-    receiver = get_or_create_student_agent(request.receiver_id)
-
-    if sender is None or receiver is None:
-        raise HTTPException(status_code=400, detail="Invalid sender or receiver ID.")
-
-    if not isinstance(sender, StudentAgent) or not isinstance(receiver, StudentAgent):
-        raise HTTPException(status_code=400, detail="Sender and receiver must be Student Agents.")
-
-    # 记录互动消息到数据库
-    interaction_message = Message(
-        sender=sender.name,
-        content=request.content,
-        timestamp=datetime.now()
-    )
-    db.add(interaction_message)
-    db.commit()
-
-    # 将互动消息放入队列
-    message_queue.put({
-        "agent": sender,
-        "message": {
-            "role_name": sender.name,
-            "role_type": "USER",
-            "meta_dict": None,
-            "content": json.dumps({
-                'action': request.action,
-                'content': request.content,
-                'receiver': request.receiver_id
-            })
-        },
-        "topic": None
-    })
-
-    # 广播消息到 WebSocket 连接
-    await manager.broadcast(json.dumps({
-        "type": "message",
-        "data": {
-            "sender": sender.name,
-            "content": request.content,
-            "timestamp": interaction_message.timestamp.isoformat()
-        }
-    }))
-
-    return {"message": "Interaction message added to queue and database."}
-
-@app.post("/tools/search")
-async def use_search_tool(request: ToolRequest):
-    """使用 DuckDuckGo 搜索工具."""
-    teacher_agent = agents.get("teacher_agent")
-    result = teacher_agent.use_tool("DuckDuckGoSearchTool", request.tool_params)
-    return {"result": result}
-
-@app.post("/tools/scrape")
-async def use_scrape_tool(request: ToolRequest):
-    """使用网页抓取工具."""
-    teacher_agent = agents.get("teacher_agent")
-    result = teacher_agent.use_tool("WebScraperTool", request.tool_params)
-    return {"result": result}
-
-@app.post("/admin")
-async def admin_action(request: AdminRequest):
-    """管理员操作接口."""
-    admin_agent = agents.get("admin_agent")
-    if admin_agent is None:
-        raise HTTPException(status_code=500, detail="Admin agent not found.")
-
-    response = admin_agent.step({
-        "role_name": "Admin",
-        "role_type": "USER",
-        "meta_dict": None,
-        "content": json.dumps({
-            'action': request.action,
-            'params': request.params
-        })
-    })
-    return {"result": response}
-
-@app.post("/upload_pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    """上传 PDF 文件并使用 Chunkr 处理."""
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a PDF file.")
-
-    # 使用临时文件存储上传的 PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(await file.read())
-        pdf_path = tmp_file.name
-
-    # 使用 ChunkrReader 处理 PDF
-    chunkr_reader = ChunkrReader()
-    chunkr_reader.submit_task(file_path=pdf_path)
-    
-    # 获取任务 ID 并返回 (这里需要根据你的 Chunkr 使用方式进行调整)
-    task_id = chunkr_reader.get_task_id(file_path=pdf_path) #你需要实现 get_task_id 这个函数
-
-    # 删除临时文件
-    os.remove(pdf_path)
-
-    return {"task_id": task_id, "message": "PDF uploaded and processing started."}
-
-@app.post("/scrape_structured")
-async def scrape_structured(request: FirecrawlScrapeRequest):
-    """使用 Firecrawl 进行结构化抓取."""
-    firecrawl = Firecrawl()
-    try:
-        response = firecrawl.structured_scrape(
-            url=request.url,
-            response_format=request.response_format
-        )
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Firecrawl structured scrape error: {e}")
-
-@app.post("/map_site")
-async def map_site(request: FirecrawlMapRequest):
-    """使用 Firecrawl 抓取网站地图."""
-    firecrawl = Firecrawl()
-    try:
-        response = firecrawl.map_site(url=request.url)
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Firecrawl map site error: {e}")
-
-@app.post("/multimodal")
-async def handle_multimodal_question(request: MultimodalRequest):
-    """处理包含图片的多模态问题."""
-    try:
-        # 解码 base64 图片
-        image_data = base64.b64decode(request.image)
-        img = Image.open(io.BytesIO(image_data))
-    
-        # 创建 Qwen-VL 模型实例
-        qwen_vl_model = ModelFactory.create(
-            model_platform=ModelPlatformType.QWEN,
-            model_type=ModelType.QWEN_VL_PLUS,
-            model_config_dict=QwenConfig(temperature=0.2).as_dict(),
-        )
-    
-        # 创建 Multimodal Agent 实例（如果尚不存在）
-        if "multimodal_agent" not in agents:
-            agents["multimodal_agent"] = MultimodalAgent(qwen_vl_model)
-    
-        # 构建消息
-        user_msg = {
-            "role_name": "User",
-            "role_type": "USER",
-            "meta_dict": None,
-            "content": request.question,
-            "image_list": [img]
-        }
-    
-        # 获取回答
-        response = agents["multimodal_agent"].step(user_msg)
-        return {"answer": response.msgs[0].content}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Multimodal processing error: {e}")
-
-@app.get("/test_model")
-async def test_model():
-    teacher_agent = agents.get("teacher_agent")
-    test_message = {
-        "role_name": "Test",
-        "role_type": "USER",
-        "meta_dict": None,
-        "content": "What is the capital of France?"
-    }
-    response = teacher_agent.generate_response(test_message, None)
-    return {"response": response}
-
-@app.get("/records", response_model=List[Dict])
-async def get_records(db: Session = Depends(get_db)):
-    records = db.query(StudyRecord).all()
-    return [
-        {
-            "id": record.id,
-            "student_id": record.student_id,
-            "content": record.content,
-            "response": record.response,
-            "timestamp": record.timestamp.isoformat(),
-        }
-        for record in records
-    ]
-
-@app.post("/text_to_speech")
-async def text_to_speech(request: TextToSpeechRequest):
-    """文本转语音接口."""
-    try:
-        fish_audio_api_url = os.environ.get("FISH_AUDIO_API")
-        fish_audio_api_key = os.environ.get("FISH_AUDIO_API_KEY")
-        headers = {
-            "Authorization": f"Bearer {fish_audio_api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "text": request.text,
-            "speaker_id": request.model_id,  # 使用预设的模型 ID
-            "speed": 1.0, # 语速
-        }
-        response = requests.post(fish_audio_api_url, headers=headers, json=payload)
-        response.raise_for_status()
-        audio_data = response.content
-        audio_base64 = base64.b64encode(audio_data).decode("utf-8")
-
-        return {"audio_data": audio_base64}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS Error: {e}")
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        # 发送现有消息历史
-        await websocket.send_text(json.dumps({
-            "type": "history",
-            "messages": await get_messages()
-        }))
-        
-        while True:
-            data = await websocket.receive_text()
-            try:
-                message_data = json.loads(data)
-                print(f"Received message over WebSocket: {message_data}")
-                # 这里可以根据需要处理接收到的消息
-            except json.JSONDecodeError:
-                print(f"Invalid JSON received: {data}")
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-        manager.disconnect(websocket)
+    """服务前端静态文件."""
+    if not full_path:
+        full_path = "index.html"
+    return FileResponse(f"../frontend/build/{full_path}")
 
 # 启动命令: uvicorn main:app --reload --port 8000
 
-# ===================== Agent 实例化 =====================
-teacher_agent = TeacherAgent()
-student_agents = {}
+# ===================== 启动初始化 =====================
+@app.on_event("startup")
+async def startup_event():
+    """启动时初始化 Agents."""
+    # 初始化 Agents
+    agents["admin_agent"] = AdminAgent()
 
-def get_or_create_student_agent(student_id: str) -> StudentAgent:
-    """获取或创建学生 Agent"""
-    if student_id not in student_agents:
-        student_agents[student_id] = StudentAgent(student_id)
-    return student_agents[student_id]
+    # 启动 Agent 线程
+    for agent_name, agent in agents.items():
+        thread = threading.Thread(target=agent_task, args=(agent, message_queue))
+        thread.daemon = True
+        thread.start()
 
-agents = {
-    "teacher_agent": teacher_agent,
-}
+    # 初始化数据库
+    await init_db()
 
-# ===================== Agent 线程 =====================
 def agent_task(agent, message_queue):
     """Agent 后台任务."""
     while True:
         try:
-            # 从队列中获取消息
             message = message_queue.get()
-            if message is None:
-                break
-
-            # 处理消息
-            response = agent.step(message)
-            if response:
-                # 广播响应
-                asyncio.run(manager.broadcast(json.dumps({
-                    "type": "agent_response",
-                    "data": {
+            if message:
+                response = agent.step(message)
+                if response:
+                    asyncio.run(manager.broadcast(json.dumps({
+                        "type": "agent_response",
                         "agent": agent.__class__.__name__,
-                        "response": response
-                    }
-                })))
-
-            # 更新并广播 Agent 状态
-            asyncio.run(manager.broadcast_agent_status())
-
+                        "content": response
+                    })))
         except Exception as e:
-            print(f"Error in agent task: {e}")
-            continue
+            print(f"Error in agent_task: {str(e)}")
+        finally:
+            message_queue.task_done()
+            time.sleep(0.1)  # 避免过度消耗 CPU
 
-# 创建并启动 Agent 线程
-for agent_name, agent in agents.items():
-    thread = threading.Thread(target=agent_task, args=(agent, message_queue))
-    thread.daemon = True
-    thread.start()
+def get_or_create_student_agent(student_id: str) -> StudentAgent:
+    """获取或创建学生 Agent"""
+    if student_id not in agents:
+        print(f"Creating new StudentAgent for student_id: {student_id}")
+        student_agent = StudentAgent(student_id)
+        agents[student_id] = student_agent
+        print(f"StudentAgent created successfully for student_id: {student_id}")
+    return agents[student_id]
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8002, log_level="info")
 
     print("=== 智能教育系统后端服务器 ===")
     print("* 数据库初始化完成")
     print("* CORS 中间件配置完成")
     print("* WebSocket 管理器初始化完成")
     print("* 所有代理初始化完成")
-    print(f"服务器运行在: http://localhost:{PORT}")
-    print(f"API 文档地址: http://localhost:{PORT}/docs")
+    print(f"服务器运行在: http://localhost:8002")
+    print(f"API 文档地址: http://localhost:8002/docs")
     print("==============================")

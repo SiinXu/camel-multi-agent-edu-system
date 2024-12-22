@@ -16,6 +16,8 @@ class Blackboard:
         self._data: Dict[str, BlackboardEntry] = {}
         self._subscribers: Dict[str, List[callable]] = {}
         self._lock = asyncio.Lock()
+        self._task_queue: List[Dict[str, Any]] = []
+        self._message_queue: List[Dict[str, Any]] = []
 
     async def write(self, key: str, value: Any, agent_id: str, metadata: Dict = None) -> None:
         """Write data to the blackboard"""
@@ -72,3 +74,27 @@ class Blackboard:
             for key, entry in self._data.items()
         }
         return json.dumps(data_dict)
+
+    async def post_task(self, task: Dict[str, Any]) -> None:
+        """发布一个新任务到任务队列."""
+        async with self._lock:
+            self._task_queue.append(task)
+
+    async def get_task(self) -> Optional[Dict[str, Any]]:
+        """获取一个任务，如果有的话."""
+        async with self._lock:
+            if self._task_queue:
+                return self._task_queue.pop(0)
+            return None
+
+    async def post_message(self, message: Dict[str, Any]) -> None:
+        """发布一条消息到消息队列."""
+        async with self._lock:
+            self._message_queue.append(message)
+
+    async def get_messages(self) -> List[Dict[str, Any]]:
+        """获取所有消息."""
+        async with self._lock:
+            messages = self._message_queue.copy()
+            self._message_queue.clear()
+            return messages

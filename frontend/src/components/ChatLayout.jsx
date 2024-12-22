@@ -1,5 +1,4 @@
 import React from 'react';
-import { PaperAirplaneIcon, PaperClipIcon } from '@heroicons/react/24/outline';
 import TitleBar from './TitleBar';
 import ChatWindow from './ChatWindow';
 import InputArea from './InputArea';
