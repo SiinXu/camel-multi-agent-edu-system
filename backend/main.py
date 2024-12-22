@@ -12,9 +12,8 @@ from datetime import datetime
 from fastapi import FastAPI, WebSocket, HTTPException, Depends, File, UploadFile, Form, Request, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship, Session
 from sqlalchemy.sql import func
 
 # 导入 Agent 类
@@ -35,28 +34,32 @@ from io import BytesIO
 from PIL import Image
 
 # ===================== 数据库模型 =====================
-Base = declarative_base()
+# 创建数据库引擎和会话
+engine = create_engine("sqlite:///./study_records.db")
+
+class Base(DeclarativeBase):
+    pass
 
 class StudyRecord(Base):
     __tablename__ = "study_records"
-
-    id = Column(Integer, primary_key=True, index=True)
+    
+    record_id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, index=True)
     student_id = Column(String, index=True)
-    content = Column(String)
-    response = Column(String)
+    topic = Column(String)
+    content = Column(Text)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 class Message(Base):
     __tablename__ = "messages"
     
-    id = Column(Integer, primary_key=True, index=True)
-    sender = Column(String)
-    content = Column(String)
+    message_id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, index=True)
+    content = Column(Text)
+    role = Column(String)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 # ===================== 数据库操作 =====================
-DATABASE_URL = "sqlite:///./study_records.db"
-engine = create_engine(DATABASE_URL)
 Base.metadata.create_all(bind=engine)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -70,45 +73,99 @@ def get_db():
 
 # ===================== Pydantic 模型 =====================
 class AskRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     student_id: str
     question: str
-    agent_name: str
     topic: Optional[str] = None
 
 class ToolRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     tool_name: str
-    tool_params: str
+    params: dict
 
 class TextToSpeechRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     text: str
-    model_id: Optional[str] = "zh-CN-XiaoxiaoNeural"
 
 class SpeechToTextRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     audio_file: str
 
 class AdminRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     action: str
-    params: Optional[Dict] = None
+    params: dict
 
 class StudentInteractRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     sender_id: str
-    receiver_id: str
     action: str
     content: Optional[str] = None
 
 class ChunkrUploadRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     file: UploadFile = File(...)
 
 class FirecrawlScrapeRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     url: str
-    response_format: Dict = None
+    params: dict
 
 class FirecrawlMapRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     url: str
 
 class MultimodalRequest(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
     question: str
-    image: str  # Base64 encoded image
+    image: Optional[str] = None
+
+class Message(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
+    content: str = Field(default="")
+    role: str = Field(default="user")
+    timestamp: Optional[datetime] = Field(default_factory=datetime.now)
+
+class StudySession(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    student_id: str
+    topic: str
+    start_time: datetime = Field(default_factory=datetime.now)
+    end_time: Optional[datetime] = None
+    status: str = Field(default="active")
+
+class ChatMessage(BaseModel):
+    model_config = {
+        "protected_namespaces": ()
+    }
+    content: str
+    role: str = Field(default="user")
+    timestamp: Optional[datetime] = Field(default_factory=datetime.now)
 
 # ===================== 全局消息队列 =====================
 message_queue = queue.Queue()
@@ -144,7 +201,24 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # ===================== FastAPI 应用 =====================
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+# 定义端口号
+PORT = 8002
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("=== 智能教育系统后端服务器 ===")
+    print("* 数据库初始化完成")
+    print("* CORS 中间件配置完成")
+    print("* WebSocket 管理器初始化完成")
+    print("* 所有代理初始化完成")
+    print(f"服务器运行在: http://localhost:{PORT}")
+    print(f"API 文档地址: http://localhost:{PORT}/docs")
+    print("==============================")
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # 配置 CORS
 app.add_middleware(
@@ -568,3 +642,16 @@ for agent_name, agent in agents.items():
     thread = threading.Thread(target=agent_task, args=(agent, message_queue))
     thread.daemon = True
     thread.start()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
+
+    print("=== 智能教育系统后端服务器 ===")
+    print("* 数据库初始化完成")
+    print("* CORS 中间件配置完成")
+    print("* WebSocket 管理器初始化完成")
+    print("* 所有代理初始化完成")
+    print(f"服务器运行在: http://localhost:{PORT}")
+    print(f"API 文档地址: http://localhost:{PORT}/docs")
+    print("==============================")

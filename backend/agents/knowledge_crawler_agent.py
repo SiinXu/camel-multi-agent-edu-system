@@ -1,12 +1,13 @@
 import json
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
+import httpx
 from typing import Dict, List, Optional
 
 class KnowledgeCrawlerAgent:
     def __init__(self):
         self.name = "KnowledgeCrawlerAgent"
-        self.search_engine = DDGS(timeout=20)
+        self.search_engine = DDGS()
 
     def receive_message(self, message):
         # 这里可以添加处理消息的逻辑，例如记录消息、触发特定动作等

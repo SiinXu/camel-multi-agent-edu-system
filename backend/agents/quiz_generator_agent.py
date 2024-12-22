@@ -5,7 +5,7 @@ from duckduckgo_search import DDGS
 class QuizGeneratorAgent:
     def __init__(self):
         self.name = "QuizGeneratorAgent"
-        self.search_engine = DDGS(timeout=20)
+        self.search_engine = DDGS()
         
     def generate_quiz(self, topic: str) -> str:
         """生成特定主题的测验"""

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Menu } from '@headlessui/react';
-import { CogIcon, BellIcon, ChatIcon } from '@heroicons/react/outline';
+import { CogIcon } from '@heroicons/react/outline';
 
 export default function TitleBar() {
   return (

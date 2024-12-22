@@ -22,7 +22,6 @@ export default function MessageItem({ message }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [showTranscript, setShowTranscript] = useState(false);
-  const audioRef = useRef(null);
   const waveformRef = useRef(null);
   const wavesurfer = useRef(null);
 

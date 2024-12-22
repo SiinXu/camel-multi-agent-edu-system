@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import ChatLayout from './components/ChatLayout';
 import NotFound from './components/NotFound';
 import { useWebSocket } from './hooks/useWebSocket';
 import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
 import SettingsPage from './components/SettingsPage';
+
+// API 配置
+const API_BASE_URL = 'http://localhost:8002';  // 更新后端服务器地址
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -26,7 +29,7 @@ function App() {
     model_name: 'Qwen/Qwen2.5-32B-Instruct',
   }));
 
-  const { socket, connected } = useWebSocket('ws://localhost:8000/ws');
+  const { socket, connected } = useWebSocket('ws://localhost:8002/ws');
 
   useEffect(() => {
     if (socket) {
@@ -43,7 +46,7 @@ function App() {
 
   const handleSendMessage = async (message) => {
     try {
-      const response = await axios.post('http://localhost:8000/api/ask', {
+      const response = await axios.post(`${API_BASE_URL}/api/ask`, {
         student_id: 'student_1',
         question: message,
         agent_name: selectedAgent,
@@ -63,7 +66,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       
-      const response = await axios.post('http://localhost:8000/api/upload_pdf', formData, {
+      const response = await axios.post(`${API_BASE_URL}/api/upload_pdf`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -81,7 +84,7 @@ function App() {
     if (!message.trim()) return;
     
     try {
-      const response = await axios.post('http://localhost:8000/api/ask', {
+      const response = await axios.post(`${API_BASE_URL}/api/ask`, {
         student_id: 'student_1',
         question: message,
         agent_name: selectedAgent,
@@ -104,7 +107,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', pdfFile);
       
-      const response = await axios.post('http://localhost:8000/api/upload_pdf', formData, {
+      const response = await axios.post(`${API_BASE_URL}/api/upload_pdf`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -123,7 +126,7 @@ function App() {
     if (!multimodalQuestion.trim() || !imageUrl.trim()) return;
     
     try {
-      const response = await axios.post('http://localhost:8000/api/multimodal', {
+      const response = await axios.post(`${API_BASE_URL}/api/multimodal`, {
         question: multimodalQuestion,
         image: imageUrl,
       });
@@ -143,7 +146,7 @@ function App() {
 
   const handleStudentInteract = async (action) => {
     try {
-      const response = await axios.post('http://localhost:8000/api/interact', {
+      const response = await axios.post(`${API_BASE_URL}/api/interact`, {
         sender_id: 'student_1',
         receiver_id: selectedAgent,
         action: action,
@@ -213,7 +216,7 @@ function App() {
             </div>
             <div className='absolute top-4 left-4'>
               <button onClick={() => setShowSettings(true)} className="bg-gray-200 dark:bg-gray-700 rounded-full p-2 focus:outline-none">
-                  ⚙️
+                ⚙️
               </button>
             </div>
             <h1 className="text-2xl font-bold text-center text-gray-900 dark:text-white mb-8 pt-16">

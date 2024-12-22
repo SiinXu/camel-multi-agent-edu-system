@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional
 from enum import Enum
 from duckduckgo_search import DDGS
+import httpx
 
 class AgentStatus(Enum):
     IDLE = "idle"
@@ -25,14 +26,14 @@ class KnowledgeLevel(Enum):
 class TeacherAgent:
     def __init__(self, agent_id: str = "teacher_agent"):
         self.agent_id = agent_id
-        self.search_engine = DDGS(timeout=20)
+        self.search_engine = DDGS()
         self.conversation_history = []
         self._status = AgentStatus.IDLE
         self._status_message = ""
         self.learning_style_model = None
         self.knowledge_assessment_model = None
         self.tools = {
-            "DuckDuckGoSearchTool": DDGS(timeout=20),
+            "DuckDuckGoSearchTool": DDGS(),
         }
         self.knowledge_crawler_agent = None
         self.faq_generator_agent = None

@@ -4,7 +4,7 @@ from duckduckgo_search import DDGS
 class FAQGeneratorAgent:
     def __init__(self):
         self.name = "FAQGeneratorAgent"
-        self.search_engine = DDGS(timeout=20)
+        self.search_engine = DDGS()
         
     def generate_faq(self, topic: str) -> str:
         """生成特定主题的 FAQ"""
