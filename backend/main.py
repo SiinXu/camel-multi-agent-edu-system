@@ -545,7 +545,7 @@ def agent_task(agent, message_queue):
                 break
 
             # 处理消息
-            response = agent.step(message["message"])
+            response = agent.step(message)
             if response:
                 # 广播响应
                 asyncio.run(manager.broadcast(json.dumps({
