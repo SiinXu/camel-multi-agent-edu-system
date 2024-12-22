@@ -1,28 +1,30 @@
 import json
-import requests
 from bs4 import BeautifulSoup
-from camel.agents import ChatAgent
-from camel.messages import BaseMessage
+from duckduckgo_search import DDGS
+from typing import Dict, List, Optional
 
-class KnowledgeCrawlerAgent(ChatAgent):
+class KnowledgeCrawlerAgent:
     def __init__(self, system_message=None, model_type=None):
         if system_message is None:
-          system_message = BaseMessage(
-              role_name="KnowledgeCrawler",
-              role_type="USER",
-              meta_dict=None,
-              content="You are a knowledge crawler. "
+          system_message = {
+              "role_name": "KnowledgeCrawler",
+              "role_type": "USER",
+              "meta_dict": None,
+              "content": "You are a knowledge crawler. "
                       "You crawl web pages based on the given topic and keywords from the config file."
-          )
-        super().__init__(system_message, model_type)
-
+          }
+        self.system_message = system_message
+        self.model_type = model_type
+        
         # 加载配置文件
         with open("config.json", "r") as f:
             self.config = json.load(f)
+            
+        self.search_engine = DDGS()
 
     def receive_message(self, message):
         # 这里可以添加处理消息的逻辑，例如记录消息、触发特定动作等
-        print(f"Knowledge Crawler received message: {message.content}")
+        print(f"Knowledge Crawler received message: {message}")
 
     def send_message(self, message, recipient):
         recipient.receive_message(message)
@@ -52,24 +54,24 @@ class KnowledgeCrawlerAgent(ChatAgent):
 
         return extracted_content or "No relevant content found for this topic."
 
-    def step(self, input_message: BaseMessage) -> BaseMessage:
+    def crawl(self, topic: str) -> str:
+        """抓取特定主题的知识"""
         try:
-            content = json.loads(input_message.content)
-            topic = content.get("topic")
-            action = content.get("action")
-
-            if action == "crawl_data":
-                result = self.crawl_data(topic)
-                message = BaseMessage(role_name="KnowledgeCrawler", role_type="AI",
-                                    meta_dict=None, content=result)
-                return message
-            else:
-                error_msg = "Invalid action specified for KnowledgeCrawler."
-                message = BaseMessage(role_name="KnowledgeCrawler", role_type="AI",
-                                    meta_dict=None, content=error_msg)
-                return message
+            results = list(self.search_engine.text(topic, max_results=5))
+            return f"已找到关于 {topic} 的 {len(results)} 条信息：\n" + "\n".join(
+                f"{i+1}. {result['title']}: {result['body']}"
+                for i, result in enumerate(results)
+            )
         except Exception as e:
-            error_msg = f"Error in KnowledgeCrawlerAgent: {e}"
-            message = BaseMessage(role_name="KnowledgeCrawler", role_type="AI",
-                                  meta_dict=None, content=error_msg)
-            return message
+            return f"抓取知识时出错: {str(e)}"
+            
+    def step(self, input_message: str) -> str:
+        """处理一条消息并返回回复"""
+        try:
+            # 解析消息
+            if isinstance(input_message, str) and "topic=" in input_message:
+                topic = input_message.split("topic=")[1].split("&")[0]
+                return self.crawl(topic)
+            return "请提供要抓取的主题，格式：topic=主题名"
+        except Exception as e:
+            return f"处理消息时出错: {str(e)}"

@@ -1,30 +1,14 @@
 import json
-from camel.agents import ChatAgent
-from camel.messages import BaseMessage
+from typing import Dict, List, Optional
 
-class AdminAgent(ChatAgent):
-    def __init__(self, system_message=None, model_type=None):
-        if system_message is None:
-          system_message = BaseMessage(
-              role_name="Admin",
-              role_type="USER",
-              meta_dict=None,
-              content="You are an administrator. "
-                      "You can manage the system configuration, such as adding, modifying, or deleting topics in the config file."
-          )
-        super().__init__(system_message, model_type)
-
-    def receive_message(self, message):
-        # 这里可以添加处理消息的逻辑，例如记录消息、触发特定动作等
-        print(f"Admin received message: {message.content}")
-
-    def send_message(self, message, recipient):
-        recipient.receive_message(message)
-
-    def update_config(self, action, params):
+class AdminAgent:
+    def __init__(self):
+        self.config_file = "config.json"
+        
+    def update_config(self, action: str, params: Dict) -> str:
         """更新配置文件."""
         try:
-            with open("config.json", "r") as f:
+            with open(self.config_file, "r") as f:
                 config = json.load(f)
 
             if action == "add_topic":
@@ -50,31 +34,27 @@ class AdminAgent(ChatAgent):
             else:
                 return "Invalid action specified."
 
-            with open("config.json", "w") as f:
+            with open(self.config_file, "w") as f:
                 json.dump(config, f, indent=4)
 
             return f"Config updated successfully. Action: {action}"
         except Exception as e:
             return f"Error updating config: {e}"
-
-    def step(self, input_message: BaseMessage) -> BaseMessage:
+            
+    def step(self, message: str) -> str:
+        """处理一条消息并返回回复"""
         try:
-            content = json.loads(input_message.content)
-            action = content.get("action")
-            params = content.get("params")
-
-            if action in ["add_topic", "modify_topic", "delete_topic"]:
-                result = self.update_config(action, params)
-                message = BaseMessage(role_name="Admin", role_type="AI",
-                                      meta_dict=None, content=result)
-                return message
-            else:
-                error_msg = "Invalid action specified for AdminAgent."
-                message = BaseMessage(role_name="Admin", role_type="AI",
-                                      meta_dict=None, content=error_msg)
-                return message
+            # 解析消息
+            if isinstance(message, str):
+                try:
+                    content = json.loads(message)
+                    action = content.get("action")
+                    params = content.get("params")
+                    if action in ["add_topic", "modify_topic", "delete_topic"]:
+                        return self.update_config(action, params)
+                    return "Invalid action specified."
+                except json.JSONDecodeError:
+                    return "Invalid message format. Expected JSON string."
+            return "Invalid message type. Expected string."
         except Exception as e:
-            error_msg = f"Error in AdminAgent: {e}"
-            message = BaseMessage(role_name="Admin", role_type="AI",
-                                  meta_dict=None, content=error_msg)
-            return message
+            return f"处理消息时出错: {str(e)}"

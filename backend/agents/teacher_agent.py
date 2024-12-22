@@ -1,25 +1,10 @@
-import os
-from getpass import getpass
-import json
-import requests
-from bs4 import BeautifulSoup
+from typing import Dict, List, Optional
 from enum import Enum
-
-from camel.agents import ChatAgent
-from camel.messages import BaseMessage
-from camel.configs import QwenConfig
-from camel.models import ModelFactory
-from camel.types import ModelPlatformType, ModelType
-from camel.utils.commons import build_tool_reponse
-
-# 导入工具类
-from tools.duckduckgo_search import DuckDuckGoSearchTool
-from tools.web_scraper import WebScraperTool
+from duckduckgo_search import DDGS
 
 class AgentStatus(Enum):
     IDLE = "idle"
     THINKING = "thinking"
-    USING_TOOL = "using_tool"
     CRAWLING = "crawling"
     GENERATING_FAQ = "generating_faq"
     GENERATING_QUIZ = "generating_quiz"
@@ -36,91 +21,26 @@ class KnowledgeLevel(Enum):
     MEDIUM = "medium"
     HIGH = "high"
 
-class TeacherAgent(ChatAgent):
-    def __init__(self, model_type=None):
-        system_message = BaseMessage(
-            role_name="Teacher",
-            role_type="ASSISTANT",
-            meta_dict=None,
-            content="You are a helpful teacher. "
-                    "You can use tools to help answer questions. "
-                    "Available tools: DuckDuckGoSearchTool, WebScraperTool. "
-                    "You can use the Knowledge Crawler Agent, FAQ Generator Agent and Quiz Generator Agent to assist you for different topics. "
-                    "You can also call the Admin Agent to manage the topics."
-        )
-        super().__init__(system_message, model_type)
-
-        # 初始化状态
+class TeacherAgent:
+    def __init__(self, agent_id: str = "teacher_agent"):
+        self.agent_id = agent_id
+        self.search_engine = DDGS(timeout=20)
+        self.conversation_history = []
         self._status = AgentStatus.IDLE
         self._status_message = ""
-
-        # 获取 API 密钥
-        self.modelscope_api_key = os.environ.get("MODELSCOPE_API_KEY")
-
-        # Qwen API 集成 (使用 ModelScope 兼容的 API)
-        self.model_config = QwenConfig(
-            model="Qwen/Qwen2.5-32B-Instruct",  # 使用 Qwen2.5-32B-Instruct 模型
-            temperature=0.2,
-            # 可以添加其他参数, 例如 top_p, repetition_penalty 等
-        )
-        self.model = ModelFactory.create(
-            model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-            model_type="Qwen/Qwen2.5-32B-Instruct",  # 使用 Qwen2.5-32B-Instruct 模型
-            api_key=self.modelscope_api_key,  # 使用环境变量中的 API Key
-            url="https://api-inference.modelscope.cn/v1/models/Qwen/Qwen2.5-32B-Instruct",
-            model_config_dict=self.model_config.as_dict(),
-        )
-
-        # Initialize ModelScope models
-        try:
-            # Load learning style diagnosis model (using Qwen as base model)
-            self.learning_style_model = ModelFactory.create(
-                model_platform=ModelPlatformType.MODEL_SCOPE,
-                model_type="qwen/Qwen-7B-Chat",  # Using Qwen-7B-Chat for text classification
-                api_key=self.modelscope_api_key,
-                model_config_dict={
-                    "device": "cuda" if os.environ.get("USE_GPU", "0") == "1" else "cpu",
-                    "max_length": 2048,
-                    "temperature": 0.1,  # Lower temperature for more focused outputs
-                    "top_p": 0.9
-                }
-            )
-            print("Learning style model loaded successfully.")
-        except Exception as e:
-            print(f"Error loading learning style model: {e}")
-            self.learning_style_model = None
-
-        try:
-            # Load knowledge assessment model (using Qwen as base model)
-            self.knowledge_assessment_model = ModelFactory.create(
-                model_platform=ModelPlatformType.MODEL_SCOPE,
-                model_type="qwen/Qwen-7B-Chat",  # Using Qwen-7B-Chat for knowledge assessment
-                api_key=self.modelscope_api_key,
-                model_config_dict={
-                    "device": "cuda" if os.environ.get("USE_GPU", "0") == "1" else "cpu",
-                    "max_length": 2048,
-                    "temperature": 0.2,
-                    "top_p": 0.9
-                }
-            )
-            print("Knowledge assessment model loaded successfully.")
-        except Exception as e:
-            print(f"Error loading knowledge assessment model: {e}")
-            self.knowledge_assessment_model = None
-
-        # 初始化工具
+        self.learning_style_model = None
+        self.knowledge_assessment_model = None
         self.tools = {
-            "DuckDuckGoSearchTool": DuckDuckGoSearchTool(),
-            "WebScraperTool": WebScraperTool(),
+            "DuckDuckGoSearchTool": DDGS(timeout=20),
         }
         self.knowledge_crawler_agent = None
         self.faq_generator_agent = None
         self.quiz_generator_agent = None
-
-        # 加载配置文件
-        with open("config.json", "r") as f:
-            self.config = json.load(f)
-        self.available_topics = self.config["available_topics"]
+        self.available_topics = []
+        self.model_config = {
+            "temperature": 0.2,
+        }
+        self.model = None
 
     @property
     def status(self):
@@ -146,35 +66,66 @@ class TeacherAgent(ChatAgent):
         self.quiz_generator_agent = agent
 
     def receive_message(self, message):
-        # 这里可以添加处理消息的逻辑，例如记录消息、触发特定动作等
-        print(f"Teacher received message: {message.content}")
+        print(f"Teacher received message: {message}")
 
     def send_message(self, message, recipient):
         recipient.receive_message(message)
 
-    def run_with_qwen(self, prompt: str) -> str:
-        """使用 Qwen API 生成回复."""
-        response = self.model.run(prompt)
-        return response
+    def search(self, query: str) -> str:
+        """使用 DuckDuckGo 搜索信息"""
+        try:
+            self.set_status(AgentStatus.CRAWLING)
+            results = list(self.search_engine.text(query, max_results=3))
+            return "\n".join(f"{r['title']}: {r['body']}" for r in results)
+        except Exception as e:
+            return f"搜索时出错: {str(e)}"
+        finally:
+            self.set_status(AgentStatus.IDLE)
 
-    def use_tool(self, tool_name: str, tool_params: str) -> str:
-        """使用工具."""
-        if tool_name in self.tools:
-            tool = self.tools[tool_name]
-            try:
-                if tool_name == "DuckDuckGoSearchTool":
-                    result = tool(tool_params)
-                elif tool_name == "WebScraperTool":
-                    result = tool(tool_params)
-                else:
-                    result = "Tool does not support specified parameters."
+    def answer_question(self, question: str, topic: Optional[str] = None) -> str:
+        """回答学生的问题"""
+        try:
+            self.set_status(AgentStatus.THINKING)
+            
+            # 记录对话历史
+            self.conversation_history.append({"role": "user", "content": question})
 
-                ret = build_tool_reponse(result)
-                return ret
-            except Exception as e:
-                return f"Error using tool {tool_name}: {e}"
-        else:
-            return f"Tool {tool_name} not found."
+            # 根据主题和问题生成回答
+            if topic:
+                response = f"关于{topic}的问题：{question}\n"
+            else:
+                response = f"问题：{question}\n"
+
+            # 搜索相关信息
+            search_query = f"{topic} {question}" if topic else question
+            search_results = self.search(search_query)
+            
+            # 生成回答
+            response += f"\n根据搜索结果，我为您整理了以下信息：\n\n{search_results}"
+            
+            # 记录回答
+            self.conversation_history.append({"role": "assistant", "content": response})
+
+            return response
+        except Exception as e:
+            return f"回答问题时出错: {str(e)}"
+        finally:
+            self.set_status(AgentStatus.IDLE)
+
+    def process_file(self, file_content: str) -> str:
+        """处理上传的文件内容"""
+        try:
+            self.set_status(AgentStatus.THINKING)
+            # 简单地返回文件内容的摘要
+            return f"文件内容摘要：\n{file_content[:500]}..." if len(file_content) > 500 else file_content
+        except Exception as e:
+            return f"处理文件时出错: {str(e)}"
+        finally:
+            self.set_status(AgentStatus.IDLE)
+
+    def get_conversation_history(self) -> List[Dict[str, str]]:
+        """获取对话历史"""
+        return self.conversation_history
 
     def assess_learning_style(self, student_id: str, history: list) -> Optional[LearningStyle]:
         """Assess student's learning style based on interaction history."""
@@ -266,24 +217,22 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
 
     def generate_response(self, student_message, current_topic):
         # 根据当前主题和学生信息进行个性化指导
-        prompt = student_message.content
+        prompt = student_message
         if current_topic:
             prompt += f"\n(Current topic: {current_topic})"
 
         # 调用 Qwen API
-        response = self.run_with_qwen(prompt)
-        message = BaseMessage(role_name="Teacher", role_type="ASSISTANT",
-                              meta_dict=None, content=response)
-        return message
+        response = self.answer_question(prompt, current_topic)
+        return response
 
-    def step(self, input_message: BaseMessage, current_topic: str = None) -> BaseMessage:
+    def step(self, input_message: str, current_topic: str = None) -> str:
         """处理一条消息并返回回复."""
         try:
             self.set_status(AgentStatus.THINKING, "思考问题中...")
-            
+
             # 根据主题选择不同的处理方式
-            content = input_message.content
-            
+            content = input_message
+
             # 从消息中提取主题（如果存在）
             if not current_topic:
                 for topic in self.available_topics:
@@ -307,50 +256,26 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
                 elif "需要更多资料" in content:
                     # 构建发给 Knowledge Crawler Agent 的消息
                     self.set_status(AgentStatus.CRAWLING, "抓取网页内容...")
-                    message_to_crawler = BaseMessage(
-                        role_name="Teacher",
-                        role_type="USER",
-                        meta_dict=None,
-                        content=json.dumps({
-                            'topic': current_topic,
-                            'action': 'crawl_data'
-                        })
-                    )
+                    message_to_crawler = f"topic={current_topic}&action=crawl_data"
 
                     # 调用 Knowledge Crawler Agent
                     crawler_response = self.knowledge_crawler_agent.step(message_to_crawler)
 
                     # 使用 Knowledge Crawler Agent 返回的信息
-                    response_content = f"Here's some information I found: {crawler_response.content}"
+                    response_content = f"Here's some information I found: {crawler_response}"
                 elif "生成FAQ" in content:
                     # 构建发给 FAQ Generator Agent 的消息
                     self.set_status(AgentStatus.GENERATING_FAQ, "生成FAQ中...")
-                    message_to_faq_generator = BaseMessage(
-                        role_name="Teacher",
-                        role_type="USER",
-                        meta_dict=None,
-                        content=json.dumps({
-                            'topic': current_topic,
-                            'action': 'generate_faq'
-                        }),
-                    )
+                    message_to_faq_generator = f"topic={current_topic}&action=generate_faq"
                     faq_generator_response = self.faq_generator_agent.step(message_to_faq_generator)
-                    response_content = f"Here are some FAQs generated: {faq_generator_response.content}"
+                    response_content = f"Here are some FAQs generated: {faq_generator_response}"
 
                 elif "生成测验" in content:
                     # 构建发给 Quiz Generator Agent 的消息
                     self.set_status(AgentStatus.GENERATING_QUIZ, "生成测验中...")
-                    message_to_quiz_generator = BaseMessage(
-                        role_name="Teacher",
-                        role_type="USER",
-                        meta_dict=None,
-                        content=json.dumps({
-                            'topic': current_topic,
-                            'action': 'generate_quiz'
-                        }),
-                    )
+                    message_to_quiz_generator = f"topic={current_topic}&action=generate_quiz"
                     quiz_generator_response = self.quiz_generator_agent.step(message_to_quiz_generator)
-                    response_content = f"Here is a quiz for you: {quiz_generator_response.content}"
+                    response_content = f"Here is a quiz for you: {quiz_generator_response}"
                 else:
                     # 调用 Qwen API
                     self.set_status(AgentStatus.THINKING, "生成回复中...")
@@ -358,32 +283,30 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
             else:
                 # 如果没有指定主题, 正常调用 Qwen API
                 self.set_status(AgentStatus.THINKING, "生成回复中...")
-                response_content = self.run_with_qwen(content)
+                response_content = self.answer_question(input_message)
 
             # Assess learning style and knowledge level
-            if input_message.role_name.startswith("student_"):
-                student_agent = agents.get(input_message.role_name)
+            if input_message.startswith("student_"):
+                student_agent = agents.get(input_message)
                 if student_agent:
                     # Assess learning style if not already set
                     if not hasattr(student_agent, 'learning_style') or not student_agent.learning_style:
                         self.set_status(AgentStatus.THINKING, "评估学习风格中...")
-                        learning_style = self.assess_learning_style(input_message.role_name, student_agent.message_history)
+                        learning_style = self.assess_learning_style(input_message, student_agent.message_history)
                         if learning_style:
                             student_agent.learning_style = learning_style
-                            print(f"Assessed learning style for {input_message.role_name}: {learning_style.value}")
+                            print(f"Assessed learning style for {input_message}: {learning_style.value}")
 
                     # Assess knowledge level for the current topic
                     if current_topic:
                         self.set_status(AgentStatus.THINKING, "评估知识水平中...")
-                        knowledge_level = self.assess_knowledge_level(input_message.role_name, current_topic, content)
+                        knowledge_level = self.assess_knowledge_level(input_message, current_topic, content)
                         if knowledge_level:
                             student_agent.knowledge_level = knowledge_level
-                            print(f"Assessed knowledge level for {input_message.role_name}: {knowledge_level.value}")
+                            print(f"Assessed knowledge level for {input_message}: {knowledge_level.value}")
 
             self.set_status(AgentStatus.IDLE)
-            message = BaseMessage(role_name="Teacher", role_type="ASSISTANT",
-                                meta_dict=None, content=response_content)
-            return message
+            return response_content
 
         except Exception as e:
             self.set_status(AgentStatus.ERROR, f"发生错误: {str(e)}")
@@ -391,5 +314,21 @@ Output the knowledge level as a single word (LOW/MEDIUM/HIGH).
 
     def reset(self):
         """重置 Agent 状态."""
-        super().reset()
         self.set_status(AgentStatus.IDLE)
+
+    def use_tool(self, tool_name: str, tool_params: str) -> str:
+        """使用工具."""
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            try:
+                if tool_name == "DuckDuckGoSearchTool":
+                    result = tool(tool_params)
+                else:
+                    result = "Tool does not support specified parameters."
+
+                ret = json.dumps(result, ensure_ascii=False, indent=2)
+                return ret
+            except Exception as e:
+                return f"Error using tool {tool_name}: {e}"
+        else:
+            return f"Tool {tool_name} not found."
